@@ -9,26 +9,25 @@ from math import radians, cos, sin, asin, sqrt
 
 RANDOM_STATE = 42
 
-# -------------------- Preprocessing --------------------
-def prepare_data(smart_df: pd.DataFrame, meta_df: pd.DataFrame) -> pd.DataFrame:
-    df = smart_df.copy()
-    df["date"] = pd.to_datetime(df["date"])
+def prepare_data(df, meta_df):
+    # 🧹 Clean column names
+    df.columns = df.columns.str.strip().str.lower()
+    meta_df.columns = meta_df.columns.str.strip().str.lower()
 
-    required = ["tower_id","zone","season","day_of_week","visit_order","prev_tower","weather",
-                "precip_mm","wind_kmph","temp_c","load_level","load_category","any_issue","x","y"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing columns in smart_tower_dataset: {missing}")
+    # 🛑 Remove duplicate column names
+    meta_df = meta_df.loc[:, ~meta_df.columns.duplicated()]
 
-    meta_cols = [c for c in meta_df.columns if c not in ["zone"]]
+    # If tower_id is still duplicated, drop extras
+    if meta_df.columns.tolist().count("tower_id") > 1:
+        meta_df = meta_df.loc[:, ~meta_df.columns.duplicated(keep="first")]
+
+    # ✅ Merge safely
+    meta_cols = [c for c in meta_df.columns if c not in ["tower_id"]]
     df = df.merge(meta_df[meta_cols + ["tower_id"]], on="tower_id", how="left", suffixes=("","_meta"))
 
     if df["any_issue"].dtype != int and df["any_issue"].dtype != bool:
-        df["any_issue"] = (df["any_issue"].astype(str).str.strip().isin(
-            ["1","True","true","Y","y","yes"]
-        )).astype(int)
-    else:
-        df["any_issue"] = df["any_issue"].astype(int)
+        df["any_issue"] = (df["any_issue"].astype(str).str.strip().isin(["1","True","true","yes"])).astype(int)
+
     return df
 
 
