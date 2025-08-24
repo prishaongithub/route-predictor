@@ -144,18 +144,26 @@ for col in ["elevation_m","age_years","maintenance_score","tree_density","wind_e
         towers[col] = meta_df[col]
 
 # Risk via LSTM: use last known sequence context (approx: use historical mean features per tower)
+# 🔮 LSTM risk scoring
 if lstm_model is not None and lstm_feats:
-    # Build a synthetic single-sequence where each step is a tower with normalized feats
-    Xl = towers[lstm_feats].copy()
-    # normalize using train stats from df
-    mu = df[lstm_feats].mean()
-    sigma = df[lstm_feats].std() + 1e-6
-    Xl = (Xl - mu) / sigma
-    # pack into shape [B=1,T=n,F]
-    X_seq = Xl.to_numpy(dtype=np.float32)[None, ...]
-    lstm_probs = infer_lstm(lstm_model, X_seq).ravel()
-else:
-    lstm_probs = np.zeros(len(towers))
+    # keep only features present in towers
+    usable_feats = [c for c in lstm_feats if c in towers.columns]
+    if not usable_feats:
+        st.warning("No overlapping LSTM features in towers; skipping LSTM prediction.")
+        lstm_probs = np.zeros(len(towers))
+    else:
+        Xl = towers[usable_feats].copy()
+
+        # normalize with training stats (use df, not towers)
+        mu = df[usable_feats].mean()
+        sigma = df[usable_feats].std() + 1e-6
+        Xl = (Xl - mu) / sigma
+
+        # [B,T,F] format for LSTM
+        X_seq = Xl.to_numpy(dtype=np.float32)[None, ...]
+        lstm_probs = infer_lstm(lstm_model, X_seq).ravel()
+        towers["risk_lstm"] = lstm_probs
+
 
 # Risk via LogReg baseline
 if logreg_pipe is not None:
