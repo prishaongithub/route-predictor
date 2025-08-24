@@ -10,6 +10,84 @@ from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
 import os
 
+SAFE_CAT_COLS = ["season","day_of_week","zone","weather","load_category"]
+
+def build_lstm_matrix(towers: pd.DataFrame, df: pd.DataFrame, lstm_feats: list) -> np.ndarray:
+    """Return X_seq with the exact feature set & order used in LSTM training."""
+    if not lstm_feats:
+        return np.zeros((1, len(towers), 0), dtype=np.float32)
+
+    Xl = pd.DataFrame(index=towers.index)
+    for f in lstm_feats:
+        if f in towers.columns:
+            Xl[f] = pd.to_numeric(towers[f], errors="coerce")
+        elif f in df.columns:
+            Xl[f] = float(df[f].median())
+        else:
+            Xl[f] = 0.0
+    Xl = Xl[lstm_feats]
+
+    # normalize with training stats
+    mu = df[lstm_feats].mean()
+    sigma = df[lstm_feats].std().replace(0, 1) + 1e-6
+    Xl = (Xl - mu) / sigma
+
+    # [B,T,F]
+    return Xl.to_numpy(dtype=np.float32)[None, ...]
+
+
+def build_baseline_matrix(
+    towers: pd.DataFrame,
+    df: pd.DataFrame,
+    X_cols: list,
+    season: str,
+    dow: str,
+    weather: str,
+    load_cat: str,
+) -> pd.DataFrame:
+    """Return Xt with the exact feature set & order used in baseline training."""
+    if not X_cols:
+        return pd.DataFrame(index=towers.index)
+
+    cat_present = [c for c in SAFE_CAT_COLS if c in X_cols]
+    num_cols = [c for c in X_cols if c not in cat_present]
+
+    Xt = pd.DataFrame(index=towers.index)
+
+    # numeric: copy → fillna → if missing, use train median → fallback 0
+    for c in num_cols:
+        if c in towers.columns:
+            Xt[c] = pd.to_numeric(towers[c], errors="coerce")
+        elif c in df.columns:
+            Xt[c] = float(df[c].median())
+        else:
+            Xt[c] = 0.0
+        if c in df.columns:
+            Xt[c] = Xt[c].fillna(df[c].median())
+        else:
+            Xt[c] = Xt[c].fillna(0.0)
+
+    # categorical: copy if present else use train mode else today's context / "Unknown"
+    fallback_cat = {
+        "season": season,
+        "day_of_week": dow,
+        "weather": weather,
+        "load_category": load_cat,
+        "zone": (towers["zone"].iloc[0] if "zone" in towers.columns and len(towers) else "Unknown"),
+    }
+    for c in cat_present:
+        if c in towers.columns:
+            Xt[c] = towers[c].astype(str)
+        elif c in df.columns and df[c].notna().any():
+            Xt[c] = str(df[c].mode().iloc[0])
+        else:
+            Xt[c] = fallback_cat.get(c, "Unknown")
+
+    # exact order
+    Xt = Xt[X_cols]
+    return Xt
+
+
 st.set_page_config(page_title="Predictive Route Planner", layout="wide")
 
 st.title("🔮 Predictive Route Planner for Tower Inspections")
@@ -146,38 +224,31 @@ for col in ["elevation_m","age_years","maintenance_score","tree_density","wind_e
 # Risk via LSTM: use last known sequence context (approx: use historical mean features per tower)
 # 🔮 LSTM risk scoring
 # 🔮 LSTM risk scoring
+# --- LSTM risk (robust) ---
 if lstm_model is not None and lstm_feats:
-    # Create a DataFrame with all training features
-    Xl = pd.DataFrame(index=towers.index)
-
-    for f in lstm_feats:
-        if f in towers.columns:
-            Xl[f] = towers[f]
-        else:
-            # feature missing at inference → fill with 0
-            Xl[f] = 0.0
-
-    # Reorder to match training feature order
-    Xl = Xl[lstm_feats]
-
-    # Normalize with training stats (from df)
-    mu = df[lstm_feats].mean()
-    sigma = df[lstm_feats].std() + 1e-6
-    Xl = (Xl - mu) / sigma
-
-    # [B,T,F] format
-    X_seq = Xl.to_numpy(dtype=np.float32)[None, ...]
-    lstm_probs = infer_lstm(lstm_model, X_seq).ravel()
-    towers["risk_lstm"] = lstm_probs
+    X_seq = build_lstm_matrix(towers, df, lstm_feats)
+    try:
+        lstm_probs = infer_lstm(lstm_model, X_seq).ravel()
+    except Exception as e:
+        st.warning(f"LSTM inference failed, falling back to zeros: {e}")
+        lstm_probs = np.zeros(len(towers), dtype=float)
+else:
+    lstm_probs = np.zeros(len(towers), dtype=float)
 
 
 
 # Risk via LogReg baseline
+# --- LogReg baseline (robust) ---
 if logreg_pipe is not None:
-    Xt = towers[[c for c in X_cols if c in towers.columns]]
-    base_probs = logreg_pipe.predict_proba(Xt)[:,1]
+    try:
+        Xt = build_baseline_matrix(towers, df, X_cols, season, dow, weather, load_cat)
+        base_probs = logreg_pipe.predict_proba(Xt)[:, 1]
+    except Exception as e:
+        st.warning(f"Baseline inference failed, falling back to zeros: {e}")
+        base_probs = np.zeros(len(towers), dtype=float)
 else:
-    base_probs = np.zeros(len(towers))
+    base_probs = np.zeros(len(towers), dtype=float)
+
 
 # Risk via Markov next-tower heuristic: boost towers that frequently follow recently visited towers
 # Find most recent day for the selected zone and build boost scores
