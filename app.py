@@ -95,7 +95,7 @@ st.caption("Hybrid risk scoring (Markov + LSTM) + Route optimization (NN + 2-opt
 
 with st.sidebar:
     st.header("⚙️ Settings")
-    model_choice = st.selectbox("Risk model", ["Hybrid (LSTM + Markov)", "LSTM only", "Markov only", "LogReg baseline"])
+    model_choice = "Hybrid (LSTM + Markov)"
     zone_filter = st.selectbox("Zone", ["All","North","South","East","West"])
     threshold = st.slider("Risk threshold", 0.0, 1.0, 0.5, 0.01)
     top_k = st.number_input("Fallback Top-K towers", min_value=5, max_value=50, value=10, step=1)
@@ -294,33 +294,8 @@ st.write("**Visit order:**", " → ".join(map(str, route)))
 minx, maxx = float(pred_df["x"].min()), float(pred_df["x"].max())
 miny, maxy = float(pred_df["y"].min()), float(pred_df["y"].max())
 is_latlon = (-90 <= miny <= 90) and (-90 <= maxy <= 90) and (-180 <= minx <= 180) and (-180 <= maxx <= 180)
-if is_latlon:
-    import pydeck as pdk
-    mdf = selected.copy()
-    mdf["order"] = 0
-    order_map = {tid:i for i, tid in enumerate(route)}
-    mdf["order"] = mdf["tower_id"].map(order_map)
-    mdf = mdf.sort_values("order")
-    st.pydeck_chart(pdk.Deck(
-        map_style=None,
-        initial_view_state=pdk.ViewState(latitude=mdf["y"].mean(), longitude=mdf["x"].mean(), zoom=8, pitch=0),
-        layers=[
-            pdk.Layer(
-                "ScatterplotLayer",
-                data=mdf,
-                get_position='[x, y]',
-                get_radius=500,
-            ),
-            pdk.Layer(
-                "PathLayer",
-                data=[{"path": mdf[["x","y"]].to_dict(orient="records")}],
-                get_width=5,
-            ),
-        ],
-    ))
-else:
-    st.info("Coordinates appear to be planar (x,y). Map view disabled; showing DataFrame instead.")
-    st.dataframe(selected[["tower_id","x","y","risk_score"]])
+st.dataframe(selected[["tower_id","zone","risk_score"]].reset_index(drop=True))
+
 
 st.success("Route ready. You can export predictions below.")
 
